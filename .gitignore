@@ -1,0 +1,17 @@
+# Build outputs / runtime data (do not commit)
+/build
+/out_build
+/public/dist
+
+# Go tooling
+/.gocache
+/.cache
+/.tools
+*.out
+
+# Logs / temp
+*.log
+*.tmp
+*.temp
+*.swp
+.DS_Store
