@@ -33,22 +33,8 @@ func New(cfg Config) (*Server, error) {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/bootstrap", bootstrapHandler(database))
-	mux.HandleFunc("/api/home", homeHandler)
 	mux.HandleFunc("/api/login", loginHandler(authMw))
-	mux.HandleFunc("/api/search/sources", searchSourcesHandler(database))
-	mux.HandleFunc("/api/search", searchHandler(database))
-	mux.HandleFunc("/api/explore", exploreHandler(database))
-	mux.HandleFunc("/api/book-info", bookInfoHandler(database))
-	mux.HandleFunc("/api/toc", tocHandler(database))
-	mux.HandleFunc("/api/content", contentHandler(database))
-	mux.HandleFunc("/api/settings/system", systemSettingsHandler(database))
-	mux.HandleFunc("/api/settings/users", usersHandler(database))
-	mux.HandleFunc("/api/settings/users/", userHandler(database))
-	mux.HandleFunc("/api/settings/book-sources", bookSourcesHandler(database))
-	mux.HandleFunc("/api/settings/book-sources/detail", bookSourceDetailHandler(database))
-	mux.HandleFunc("/api/settings/book-sources/import/local", bookSourceImportLocalHandler(database))
-	mux.HandleFunc("/api/settings/book-sources/import/network", bookSourceImportNetworkHandler(database))
-	mux.HandleFunc("/api/settings/book-sources/import/confirm", bookSourceImportConfirmHandler(database))
+	mux.Handle("/api/", requireLogin(apiHandler(database)))
 	mux.Handle("/", static.Handler())
 
 	return &Server{
@@ -65,6 +51,36 @@ func (s *Server) Close() error {
 		return nil
 	}
 	return s.db.Close()
+}
+
+func apiHandler(database *db.DB) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/home", homeHandler)
+	mux.HandleFunc("/api/search/sources", searchSourcesHandler(database))
+	mux.HandleFunc("/api/search", searchHandler(database))
+	mux.HandleFunc("/api/explore", exploreHandler(database))
+	mux.HandleFunc("/api/book-info", bookInfoHandler(database))
+	mux.HandleFunc("/api/toc", tocHandler(database))
+	mux.HandleFunc("/api/content", contentHandler(database))
+	mux.HandleFunc("/api/settings/system", systemSettingsHandler(database))
+	mux.HandleFunc("/api/settings/users", usersHandler(database))
+	mux.HandleFunc("/api/settings/users/", userHandler(database))
+	mux.HandleFunc("/api/settings/book-sources", bookSourcesHandler(database))
+	mux.HandleFunc("/api/settings/book-sources/detail", bookSourceDetailHandler(database))
+	mux.HandleFunc("/api/settings/book-sources/import/local", bookSourceImportLocalHandler(database))
+	mux.HandleFunc("/api/settings/book-sources/import/network", bookSourceImportNetworkHandler(database))
+	mux.HandleFunc("/api/settings/book-sources/import/confirm", bookSourceImportConfirmHandler(database))
+	return mux
+}
+
+func requireLogin(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if auth.CurrentUser(r) == nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"message": "unauthorized"})
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func noStoreForAppShell(next http.Handler) http.Handler {
