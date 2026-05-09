@@ -93,24 +93,78 @@ type exploreRuntimeRequest struct {
 	Page      int    `json:"page"`
 }
 
-type bookInfoRuntimeRequest struct {
-	SourceURL string      `json:"sourceUrl"`
-	BookURL   string      `json:"bookUrl"`
-	Book      legado.Book `json:"book"`
-	CanReName bool        `json:"canReName"`
+type bookInfoRequest struct {
+	SourceID string            `json:"sourceId"`
+	BookURL  string            `json:"bookUrl"`
+	Book     searchBookPayload `json:"book"`
 }
 
-type tocRuntimeRequest struct {
-	SourceURL string      `json:"sourceUrl"`
-	TocURL    string      `json:"tocUrl"`
-	Book      legado.Book `json:"book"`
+type bookInfoResponse struct {
+	Book   bookInfoPayload    `json:"book"`
+	Source searchSourceStatus `json:"source"`
 }
 
-type contentRuntimeRequest struct {
-	SourceURL  string         `json:"sourceUrl"`
-	ChapterURL string         `json:"chapterUrl"`
-	Book       legado.Book    `json:"book"`
-	Chapter    legado.Chapter `json:"chapter"`
+type bookInfoPayload struct {
+	Name          string   `json:"name,omitempty"`
+	Author        string   `json:"author,omitempty"`
+	BookURL       string   `json:"bookUrl,omitempty"`
+	TocURL        string   `json:"tocUrl,omitempty"`
+	CoverURL      string   `json:"coverUrl,omitempty"`
+	ImageURL      string   `json:"imageUrl,omitempty"`
+	Intro         string   `json:"intro,omitempty"`
+	Kind          string   `json:"kind,omitempty"`
+	Tags          []string `json:"tags,omitempty"`
+	LastChapter   string   `json:"lastChapter,omitempty"`
+	LatestChapter string   `json:"latestChapter,omitempty"`
+	UpdateTime    string   `json:"updateTime,omitempty"`
+	Time          string   `json:"time,omitempty"`
+	WordCount     string   `json:"wordCount,omitempty"`
+	DownloadURLs  string   `json:"downloadUrls,omitempty"`
+	SourceID      string   `json:"sourceId"`
+	SourceName    string   `json:"sourceName"`
+	SourceGroup   string   `json:"sourceGroup,omitempty"`
+}
+
+type tocRequest struct {
+	SourceID string          `json:"sourceId"`
+	BookURL  string          `json:"bookUrl"`
+	TocURL   string          `json:"tocUrl"`
+	Book     bookInfoPayload `json:"book"`
+}
+
+type tocResponse struct {
+	TocURL   string             `json:"tocUrl"`
+	Total    int                `json:"total"`
+	Chapters []chapterPayload   `json:"chapters"`
+	Source   searchSourceStatus `json:"source"`
+}
+
+type chapterPayload struct {
+	Index      int    `json:"index"`
+	Name       string `json:"name,omitempty"`
+	Title      string `json:"title,omitempty"`
+	ChapterURL string `json:"chapterUrl,omitempty"`
+	URL        string `json:"url,omitempty"`
+	IsVolume   bool   `json:"isVolume,omitempty"`
+	IsVIP      bool   `json:"isVip,omitempty"`
+	UpdateTime string `json:"updateTime,omitempty"`
+	Time       string `json:"time,omitempty"`
+}
+
+type contentRequest struct {
+	SourceID   string          `json:"sourceId"`
+	ChapterURL string          `json:"chapterUrl"`
+	Book       bookInfoPayload `json:"book"`
+	Chapter    chapterPayload  `json:"chapter"`
+}
+
+type contentResponse struct {
+	ChapterURL string             `json:"chapterUrl"`
+	Chapter    chapterPayload     `json:"chapter"`
+	Content    string             `json:"content"`
+	ImageStyle string             `json:"imageStyle,omitempty"`
+	NextURLs   []string           `json:"nextUrls,omitempty"`
+	Source     searchSourceStatus `json:"source"`
 }
 
 func searchSourcesHandler(database *db.DB) http.HandlerFunc {
@@ -516,28 +570,84 @@ func bookInfoHandler(database *db.DB) http.HandlerFunc {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"message": "method not allowed"})
 			return
 		}
-		var input bookInfoRuntimeRequest
+		var input bookInfoRequest
 		if err := readRuntimeInput(r, &input); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "请求格式不正确"})
 			return
 		}
-		input.SourceURL = firstNonEmpty(input.SourceURL, r.URL.Query().Get("sourceUrl"), r.URL.Query().Get("source"))
-		input.BookURL = firstNonEmpty(input.BookURL, r.URL.Query().Get("bookUrl"), r.URL.Query().Get("url"), input.Book.BookURL)
-		if strings.TrimSpace(input.SourceURL) == "" || strings.TrimSpace(input.BookURL) == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "书源地址和书籍地址不能为空"})
+		fillBookInfoInputFromQuery(&input, r)
+		input.SourceID = firstNonEmpty(input.SourceID, input.Book.SourceID)
+		input.BookURL = firstNonEmpty(input.BookURL, input.Book.BookURL)
+		if strings.TrimSpace(input.SourceID) == "" || strings.TrimSpace(input.BookURL) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "书源 ID 和书籍地址不能为空"})
 			return
 		}
-		source, ok := loadRuntimeSource(w, database, input.SourceURL)
+
+		source, ok := loadSearchSourceByID(w, database, input.SourceID)
 		if !ok {
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
-		book, err := legado.NewEngine().BookInfo(ctx, source, legado.BookInfoOptions{BookURL: input.BookURL, Book: input.Book, CanReName: input.CanReName})
+
+		seed := legadoBookFromSearchPayload(input.Book)
+		book, err := legado.NewEngine().BookInfo(ctx, source, legado.BookInfoOptions{BookURL: input.BookURL, Book: seed, CanReName: true})
 		if handleRuntimeError(w, err) {
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"book": book})
+		status := searchStatusFromSource(source)
+		status.Success = true
+		status.Count = 1
+		writeJSON(w, http.StatusOK, bookInfoResponse{
+			Book:   bookInfoFromLegado(source, book),
+			Source: status,
+		})
+	}
+}
+
+func fillBookInfoInputFromQuery(input *bookInfoRequest, r *http.Request) {
+	query := r.URL.Query()
+	input.SourceID = firstNonEmpty(input.SourceID, query.Get("sourceId"), query.Get("id"))
+	input.BookURL = firstNonEmpty(input.BookURL, query.Get("bookUrl"), query.Get("url"))
+}
+
+func legadoBookFromSearchPayload(book searchBookPayload) legado.Book {
+	return legado.Book{
+		Name:        book.Name,
+		Author:      book.Author,
+		BookURL:     book.BookURL,
+		CoverURL:    firstNonEmpty(book.CoverURL, book.ImageURL),
+		Intro:       book.Intro,
+		Kind:        firstNonEmpty(book.Kind, strings.Join(book.Tags, ",")),
+		LastChapter: firstNonEmpty(book.LastChapter, book.LatestChapter),
+		UpdateTime:  firstNonEmpty(book.UpdateTime, book.Time),
+		WordCount:   book.WordCount,
+		SourceName:  book.SourceName,
+	}
+}
+
+func bookInfoFromLegado(source legado.Source, book legado.Book) bookInfoPayload {
+	sourceName := firstNonEmpty(book.SourceName, source.BookSourceName)
+	kind := book.Kind
+	return bookInfoPayload{
+		Name:          book.Name,
+		Author:        book.Author,
+		BookURL:       book.BookURL,
+		TocURL:        book.TocURL,
+		CoverURL:      book.CoverURL,
+		ImageURL:      book.CoverURL,
+		Intro:         book.Intro,
+		Kind:          kind,
+		Tags:          splitSearchTags(kind),
+		LastChapter:   book.LastChapter,
+		LatestChapter: book.LastChapter,
+		UpdateTime:    book.UpdateTime,
+		Time:          book.UpdateTime,
+		WordCount:     book.WordCount,
+		DownloadURLs:  book.DownloadURLs,
+		SourceID:      bookSourceID(source.BookSourceURL),
+		SourceName:    sourceName,
+		SourceGroup:   source.BookSourceGroup,
 	}
 }
 
@@ -547,29 +657,56 @@ func tocHandler(database *db.DB) http.HandlerFunc {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"message": "method not allowed"})
 			return
 		}
-		var input tocRuntimeRequest
+		var input tocRequest
 		if err := readRuntimeInput(r, &input); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "请求格式不正确"})
 			return
 		}
-		input.SourceURL = firstNonEmpty(input.SourceURL, r.URL.Query().Get("sourceUrl"), r.URL.Query().Get("source"))
-		input.TocURL = firstNonEmpty(input.TocURL, r.URL.Query().Get("tocUrl"), r.URL.Query().Get("url"), input.Book.TocURL)
-		if strings.TrimSpace(input.SourceURL) == "" || strings.TrimSpace(input.TocURL) == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "书源地址和目录地址不能为空"})
+		fillTocInputFromQuery(&input, r)
+		input.SourceID = firstNonEmpty(input.SourceID, input.Book.SourceID)
+		input.BookURL = firstNonEmpty(input.BookURL, input.Book.BookURL)
+		input.TocURL = firstNonEmpty(input.TocURL, input.Book.TocURL, input.BookURL)
+		if strings.TrimSpace(input.SourceID) == "" || strings.TrimSpace(input.TocURL) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "书源 ID 和目录地址不能为空"})
 			return
 		}
-		source, ok := loadRuntimeSource(w, database, input.SourceURL)
+
+		source, ok := loadSearchSourceByID(w, database, input.SourceID)
 		if !ok {
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
-		result, err := legado.NewEngine().Toc(ctx, source, legado.TocOptions{TocURL: input.TocURL, Book: input.Book})
+
+		book := legadoBookFromInfoPayload(input.Book)
+		if book.BookURL == "" {
+			book.BookURL = input.BookURL
+		}
+		if book.TocURL == "" {
+			book.TocURL = input.TocURL
+		}
+		result, err := legado.NewEngine().Toc(ctx, source, legado.TocOptions{TocURL: input.TocURL, Book: book})
 		if handleRuntimeError(w, err) {
 			return
 		}
-		writeJSON(w, http.StatusOK, result)
+		chapters := chaptersFromLegado(result.Chapters)
+		status := searchStatusFromSource(source)
+		status.Success = true
+		status.Count = len(chapters)
+		writeJSON(w, http.StatusOK, tocResponse{
+			TocURL:   result.TocURL,
+			Total:    len(chapters),
+			Chapters: chapters,
+			Source:   status,
+		})
 	}
+}
+
+func fillTocInputFromQuery(input *tocRequest, r *http.Request) {
+	query := r.URL.Query()
+	input.SourceID = firstNonEmpty(input.SourceID, query.Get("sourceId"), query.Get("id"))
+	input.BookURL = firstNonEmpty(input.BookURL, query.Get("bookUrl"))
+	input.TocURL = firstNonEmpty(input.TocURL, query.Get("tocUrl"), query.Get("url"))
 }
 
 func contentHandler(database *db.DB) http.HandlerFunc {
@@ -578,28 +715,107 @@ func contentHandler(database *db.DB) http.HandlerFunc {
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"message": "method not allowed"})
 			return
 		}
-		var input contentRuntimeRequest
+		var input contentRequest
 		if err := readRuntimeInput(r, &input); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "请求格式不正确"})
 			return
 		}
-		input.SourceURL = firstNonEmpty(input.SourceURL, r.URL.Query().Get("sourceUrl"), r.URL.Query().Get("source"))
-		input.ChapterURL = firstNonEmpty(input.ChapterURL, r.URL.Query().Get("chapterUrl"), r.URL.Query().Get("url"), input.Chapter.URL)
-		if strings.TrimSpace(input.SourceURL) == "" || strings.TrimSpace(input.ChapterURL) == "" {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "书源地址和章节地址不能为空"})
+		fillContentInputFromQuery(&input, r)
+		input.SourceID = firstNonEmpty(input.SourceID, input.Book.SourceID)
+		input.ChapterURL = firstNonEmpty(input.ChapterURL, input.Chapter.ChapterURL, input.Chapter.URL)
+		if strings.TrimSpace(input.SourceID) == "" || strings.TrimSpace(input.ChapterURL) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "书源 ID 和章节地址不能为空"})
 			return
 		}
-		source, ok := loadRuntimeSource(w, database, input.SourceURL)
+
+		source, ok := loadSearchSourceByID(w, database, input.SourceID)
 		if !ok {
 			return
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 		defer cancel()
-		result, err := legado.NewEngine().Content(ctx, source, legado.ContentOptions{ChapterURL: input.ChapterURL, Book: input.Book, Chapter: input.Chapter})
+
+		book := legadoBookFromInfoPayload(input.Book)
+		chapter := legadoChapterFromPayload(input.Chapter)
+		if chapter.URL == "" {
+			chapter.URL = input.ChapterURL
+		}
+		result, err := legado.NewEngine().Content(ctx, source, legado.ContentOptions{ChapterURL: input.ChapterURL, Book: book, Chapter: chapter})
 		if handleRuntimeError(w, err) {
 			return
 		}
-		writeJSON(w, http.StatusOK, result)
+		status := searchStatusFromSource(source)
+		status.Success = true
+		status.Count = 1
+		responseChapter := chapterPayloadFromLegado(chapter, input.Chapter.Index)
+		if result.ChapterURL != "" {
+			responseChapter.ChapterURL = result.ChapterURL
+			responseChapter.URL = result.ChapterURL
+		}
+		writeJSON(w, http.StatusOK, contentResponse{
+			ChapterURL: result.ChapterURL,
+			Chapter:    responseChapter,
+			Content:    result.Content,
+			ImageStyle: result.ImageStyle,
+			NextURLs:   result.NextURLs,
+			Source:     status,
+		})
+	}
+}
+
+func fillContentInputFromQuery(input *contentRequest, r *http.Request) {
+	query := r.URL.Query()
+	input.SourceID = firstNonEmpty(input.SourceID, query.Get("sourceId"), query.Get("id"))
+	input.ChapterURL = firstNonEmpty(input.ChapterURL, query.Get("chapterUrl"), query.Get("url"))
+}
+
+func legadoBookFromInfoPayload(book bookInfoPayload) legado.Book {
+	return legado.Book{
+		Name:         book.Name,
+		Author:       book.Author,
+		BookURL:      book.BookURL,
+		TocURL:       book.TocURL,
+		CoverURL:     firstNonEmpty(book.CoverURL, book.ImageURL),
+		Intro:        book.Intro,
+		Kind:         firstNonEmpty(book.Kind, strings.Join(book.Tags, ",")),
+		LastChapter:  firstNonEmpty(book.LastChapter, book.LatestChapter),
+		UpdateTime:   firstNonEmpty(book.UpdateTime, book.Time),
+		WordCount:    book.WordCount,
+		DownloadURLs: book.DownloadURLs,
+		SourceName:   book.SourceName,
+	}
+}
+
+func legadoChapterFromPayload(chapter chapterPayload) legado.Chapter {
+	return legado.Chapter{
+		Name:       firstNonEmpty(chapter.Name, chapter.Title),
+		URL:        firstNonEmpty(chapter.ChapterURL, chapter.URL),
+		IsVolume:   chapter.IsVolume,
+		IsVIP:      chapter.IsVIP,
+		UpdateTime: firstNonEmpty(chapter.UpdateTime, chapter.Time),
+	}
+}
+
+func chaptersFromLegado(chapters []legado.Chapter) []chapterPayload {
+	items := make([]chapterPayload, 0, len(chapters))
+	for index, chapter := range chapters {
+		items = append(items, chapterPayloadFromLegado(chapter, index))
+	}
+	return items
+}
+
+func chapterPayloadFromLegado(chapter legado.Chapter, index int) chapterPayload {
+	name := chapter.Name
+	return chapterPayload{
+		Index:      index,
+		Name:       name,
+		Title:      name,
+		ChapterURL: chapter.URL,
+		URL:        chapter.URL,
+		IsVolume:   chapter.IsVolume,
+		IsVIP:      chapter.IsVIP,
+		UpdateTime: chapter.UpdateTime,
+		Time:       chapter.UpdateTime,
 	}
 }
 
