@@ -130,6 +130,46 @@ func (d *DB) initSchema() error {
 			created_at INTEGER NOT NULL DEFAULT 0,
 			updated_at INTEGER NOT NULL DEFAULT 0
 		);
+
+		CREATE TABLE IF NOT EXISTS book_sources (
+			book_source_url TEXT PRIMARY KEY,
+			book_source_name TEXT NOT NULL,
+			book_source_group TEXT,
+			book_source_type INTEGER NOT NULL DEFAULT 0,
+			book_url_pattern TEXT,
+			custom_order INTEGER NOT NULL DEFAULT 0,
+			enabled INTEGER NOT NULL DEFAULT 1,
+			enabled_explore INTEGER NOT NULL DEFAULT 1,
+			js_lib TEXT,
+			enabled_cookie_jar INTEGER DEFAULT 0,
+			concurrent_rate TEXT,
+			header TEXT,
+			login_url TEXT,
+			login_ui TEXT,
+			login_check_js TEXT,
+			cover_decode_js TEXT,
+			book_source_comment TEXT,
+			variable_comment TEXT,
+			last_update_time INTEGER NOT NULL DEFAULT 0,
+			respond_time INTEGER NOT NULL DEFAULT 180000,
+			weight INTEGER NOT NULL DEFAULT 0,
+			explore_url TEXT,
+			explore_screen TEXT,
+			search_url TEXT,
+			rule_search TEXT,
+			rule_explore TEXT,
+			rule_book_info TEXT,
+			rule_toc TEXT,
+			rule_content TEXT,
+			rule_review TEXT,
+			raw_json TEXT NOT NULL,
+			created_at INTEGER NOT NULL DEFAULT 0,
+			updated_at INTEGER NOT NULL DEFAULT 0
+		);
+		CREATE INDEX IF NOT EXISTS idx_book_sources_group ON book_sources(book_source_group);
+		CREATE INDEX IF NOT EXISTS idx_book_sources_enabled ON book_sources(enabled, enabled_explore);
+		CREATE INDEX IF NOT EXISTS idx_book_sources_order ON book_sources(custom_order, book_source_name COLLATE NOCASE, book_source_url);
+		CREATE INDEX IF NOT EXISTS idx_book_sources_updated ON book_sources(updated_at);
 	`); err != nil {
 		return err
 	}

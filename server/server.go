@@ -38,6 +38,11 @@ func New(cfg Config) (*Server, error) {
 	mux.HandleFunc("/api/settings/system", systemSettingsHandler(database))
 	mux.HandleFunc("/api/settings/users", usersHandler(database))
 	mux.HandleFunc("/api/settings/users/", userHandler(database))
+	mux.HandleFunc("/api/settings/book-sources", bookSourcesHandler(database))
+	mux.HandleFunc("/api/settings/book-sources/detail", bookSourceDetailHandler(database))
+	mux.HandleFunc("/api/settings/book-sources/import/local", bookSourceImportLocalHandler(database))
+	mux.HandleFunc("/api/settings/book-sources/import/network", bookSourceImportNetworkHandler(database))
+	mux.HandleFunc("/api/settings/book-sources/import/confirm", bookSourceImportConfirmHandler(database))
 	mux.Handle("/", static.Handler())
 
 	return &Server{
