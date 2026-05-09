@@ -580,6 +580,7 @@ func bookSourceDetailPayload(row db.BookSourceRow) map[string]any {
 
 func bookSourcePayload(row db.BookSourceRow) map[string]any {
 	return map[string]any{
+		"sourceId":         bookSourceID(row.BookSourceURL),
 		"bookSourceUrl":    row.BookSourceURL,
 		"bookSourceName":   row.BookSourceName,
 		"bookSourceGroup":  row.BookSourceGroup,

@@ -35,6 +35,7 @@ func New(cfg Config) (*Server, error) {
 	mux.HandleFunc("/api/bootstrap", bootstrapHandler(database))
 	mux.HandleFunc("/api/home", homeHandler)
 	mux.HandleFunc("/api/login", loginHandler(authMw))
+	mux.HandleFunc("/api/search/sources", searchSourcesHandler(database))
 	mux.HandleFunc("/api/search", searchHandler(database))
 	mux.HandleFunc("/api/explore", exploreHandler(database))
 	mux.HandleFunc("/api/book-info", bookInfoHandler(database))
