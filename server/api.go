@@ -78,7 +78,8 @@ func loginHandler(authMw *auth.Auth) http.HandlerFunc {
 }
 
 type systemSettingsRequest struct {
-	SiteName string `json:"siteName"`
+	SiteName          *string `json:"siteName"`
+	SearchConcurrency *int    `json:"searchConcurrency"`
 }
 
 type userSettingsRequest struct {
@@ -180,29 +181,56 @@ func systemSettingsHandler(database *db.DB) http.HandlerFunc {
 
 		switch r.Method {
 		case http.MethodGet:
-			siteName, err := database.SiteName()
-			if err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "请求失败"})
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]any{"siteName": siteName})
+			writeSystemSettings(w, database)
 		case http.MethodPut:
 			var input systemSettingsRequest
-			_ = json.NewDecoder(r.Body).Decode(&input)
-			siteName := strings.TrimSpace(input.SiteName)
-			if siteName == "" {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"message": "站点名称不能为空"})
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"message": "请求格式不正确"})
 				return
 			}
-			if err := database.SetSiteName(siteName); err != nil {
-				writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "保存失败"})
-				return
+			if input.SiteName != nil {
+				siteName := strings.TrimSpace(*input.SiteName)
+				if siteName == "" {
+					writeJSON(w, http.StatusBadRequest, map[string]string{"message": "站点名称不能为空"})
+					return
+				}
+				if err := database.SetSiteName(siteName); err != nil {
+					writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "保存失败"})
+					return
+				}
 			}
-			writeJSON(w, http.StatusOK, map[string]any{"siteName": siteName})
+			if input.SearchConcurrency != nil {
+				if *input.SearchConcurrency <= 0 {
+					writeJSON(w, http.StatusBadRequest, map[string]string{"message": "搜索并发数必须大于 0"})
+					return
+				}
+				if err := database.SetSearchConcurrency(*input.SearchConcurrency); err != nil {
+					writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "保存失败"})
+					return
+				}
+			}
+			writeSystemSettings(w, database)
 		default:
 			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"message": "method not allowed"})
 		}
 	}
+}
+
+func writeSystemSettings(w http.ResponseWriter, database *db.DB) {
+	siteName, err := database.SiteName()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "请求失败"})
+		return
+	}
+	searchConcurrency, err := database.SearchConcurrency()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "请求失败"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"siteName":          siteName,
+		"searchConcurrency": searchConcurrency,
+	})
 }
 
 func requireAdmin(w http.ResponseWriter, r *http.Request) *auth.User {

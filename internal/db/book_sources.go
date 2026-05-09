@@ -87,6 +87,18 @@ var ErrBookSourceURLExists = errors.New("book source url exists")
 
 const bookSourceURLQueryBatchSize = 500
 
+const bookSourceDetailColumns = `
+	book_source_url, book_source_name, book_source_group, book_source_type, book_url_pattern,
+	custom_order, enabled, enabled_explore, js_lib, enabled_cookie_jar, concurrent_rate, header,
+	login_url, login_ui, login_check_js, cover_decode_js, book_source_comment, variable_comment,
+	last_update_time, respond_time, weight, explore_url, explore_screen, search_url, rule_search,
+	rule_explore, rule_book_info, rule_toc, rule_content, rule_review, raw_json, created_at, updated_at
+`
+
+type bookSourceScanner interface {
+	Scan(dest ...any) error
+}
+
 func (d *DB) ListBookSources() ([]BookSourceRow, error) {
 	if d == nil || d.db == nil {
 		return nil, errors.New("db nil")
@@ -146,22 +158,51 @@ func (d *DB) GetBookSourceByURL(bookSourceURL string) (BookSourceRow, error) {
 		return BookSourceRow{}, errors.New("book source url empty")
 	}
 
+	return scanBookSourceDetail(d.db.QueryRow(`
+		SELECT `+bookSourceDetailColumns+`
+		FROM book_sources
+		WHERE book_source_url=?
+		LIMIT 1
+	`, url))
+}
+
+func (d *DB) ListEnabledBookSourceDetails() ([]BookSourceRow, error) {
+	if d == nil || d.db == nil {
+		return nil, errors.New("db nil")
+	}
+	rows, err := d.db.Query(`
+		SELECT ` + bookSourceDetailColumns + `
+		FROM book_sources
+		WHERE enabled=1
+		ORDER BY custom_order ASC, book_source_name COLLATE NOCASE ASC, book_source_url ASC
+	`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	items := make([]BookSourceRow, 0)
+	for rows.Next() {
+		row, err := scanBookSourceDetail(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, row)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func scanBookSourceDetail(scanner bookSourceScanner) (BookSourceRow, error) {
 	var row BookSourceRow
 	var bookSourceGroup, bookURLPattern, jsLib, concurrentRate, header sql.NullString
 	var loginURL, loginUI, loginCheckJS, coverDecodeJS sql.NullString
 	var bookSourceComment, variableComment, exploreURL, exploreScreen sql.NullString
 	var searchURL, ruleSearch, ruleExplore, ruleBookInfo, ruleToc, ruleContent, ruleReview sql.NullString
 	var enabled, enabledExplore, enabledCookieJar int64
-	err := d.db.QueryRow(`
-		SELECT book_source_url, book_source_name, book_source_group, book_source_type, book_url_pattern,
-			custom_order, enabled, enabled_explore, js_lib, enabled_cookie_jar, concurrent_rate, header,
-			login_url, login_ui, login_check_js, cover_decode_js, book_source_comment, variable_comment,
-			last_update_time, respond_time, weight, explore_url, explore_screen, search_url, rule_search,
-			rule_explore, rule_book_info, rule_toc, rule_content, rule_review, created_at, updated_at
-		FROM book_sources
-		WHERE book_source_url=?
-		LIMIT 1
-	`, url).Scan(
+	err := scanner.Scan(
 		&row.BookSourceURL,
 		&row.BookSourceName,
 		&bookSourceGroup,
@@ -192,6 +233,7 @@ func (d *DB) GetBookSourceByURL(bookSourceURL string) (BookSourceRow, error) {
 		&ruleToc,
 		&ruleContent,
 		&ruleReview,
+		&row.RawJSON,
 		&row.CreatedAt,
 		&row.UpdatedAt,
 	)

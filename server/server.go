@@ -57,6 +57,7 @@ func apiHandler(database *db.DB) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/home", homeHandler)
 	mux.HandleFunc("/api/search/sources", searchSourcesHandler(database))
+	mux.HandleFunc("/api/search/stream", searchStreamHandler(database))
 	mux.HandleFunc("/api/search", searchHandler(database))
 	mux.HandleFunc("/api/explore", exploreHandler(database))
 	mux.HandleFunc("/api/book-info", bookInfoHandler(database))

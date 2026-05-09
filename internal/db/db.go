@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -50,7 +51,10 @@ type TokenRow struct {
 	ExpiresAt time.Time
 }
 
-const DefaultSiteName = "开源阅读"
+const (
+	DefaultSiteName          = "开源阅读"
+	DefaultSearchConcurrency = 24
+)
 
 func Open() (*DB, error) {
 	filePath, err := resolveDBFile()
@@ -181,9 +185,15 @@ func (d *DB) initSchema() error {
 
 func (d *DB) ensureDefaultSettings() error {
 	now := time.Now().Unix()
-	_, err := d.db.Exec(
-		`INSERT OR IGNORE INTO app_settings(key,value,created_at,updated_at) VALUES('site_name',?,?,?)`,
+	_, err := d.db.Exec(`
+		INSERT OR IGNORE INTO app_settings(key,value,created_at,updated_at) VALUES
+			('site_name',?,?,?),
+			('search_concurrency',?,?,?)
+	`,
 		DefaultSiteName,
+		now,
+		now,
+		strconv.Itoa(DefaultSearchConcurrency),
 		now,
 		now,
 	)
@@ -465,5 +475,39 @@ func (d *DB) SetSiteName(siteName string) error {
 		INSERT INTO app_settings(key,value,created_at,updated_at) VALUES('site_name',?,?,?)
 		ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
 	`, value, now, now)
+	return err
+}
+
+func (d *DB) SearchConcurrency() (int, error) {
+	if d == nil || d.db == nil {
+		return DefaultSearchConcurrency, errors.New("db nil")
+	}
+	var value string
+	err := d.db.QueryRow(`SELECT value FROM app_settings WHERE key='search_concurrency' LIMIT 1`).Scan(&value)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return DefaultSearchConcurrency, nil
+		}
+		return DefaultSearchConcurrency, err
+	}
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil || parsed <= 0 {
+		return DefaultSearchConcurrency, nil
+	}
+	return parsed, nil
+}
+
+func (d *DB) SetSearchConcurrency(value int) error {
+	if d == nil || d.db == nil {
+		return errors.New("db nil")
+	}
+	if value <= 0 {
+		value = DefaultSearchConcurrency
+	}
+	now := time.Now().Unix()
+	_, err := d.db.Exec(`
+		INSERT INTO app_settings(key,value,created_at,updated_at) VALUES('search_concurrency',?,?,?)
+		ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at
+	`, strconv.Itoa(value), now, now)
 	return err
 }

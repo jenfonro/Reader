@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jenfonro/reader/internal/db"
@@ -42,6 +43,18 @@ type searchResponse struct {
 	Total   int                 `json:"total"`
 	Books   []searchBookPayload `json:"books"`
 	Source  searchSourceStatus  `json:"source"`
+}
+
+type searchStreamEvent struct {
+	Type             string              `json:"type"`
+	Keyword          string              `json:"keyword,omitempty"`
+	Page             int                 `json:"page,omitempty"`
+	TotalSources     int                 `json:"totalSources,omitempty"`
+	CompletedSources int                 `json:"completedSources,omitempty"`
+	TotalBooks       int                 `json:"totalBooks,omitempty"`
+	Books            []searchBookPayload `json:"books,omitempty"`
+	Source           searchSourceStatus  `json:"source,omitempty"`
+	Message          string              `json:"message,omitempty"`
 }
 
 type searchBookPayload struct {
@@ -135,6 +148,179 @@ func derefString(value *string) string {
 		return ""
 	}
 	return *value
+}
+
+func searchStreamHandler(database *db.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"message": "method not allowed"})
+			return
+		}
+
+		input := searchRequest{Page: 1}
+		if err := readRuntimeInput(r, &input); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "请求格式不正确"})
+			return
+		}
+		fillSearchInputFromQuery(&input, r)
+		input.Keyword = strings.TrimSpace(input.Keyword)
+		if input.Keyword == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"message": "搜索关键词不能为空"})
+			return
+		}
+		if input.Page <= 0 {
+			input.Page = 1
+		}
+
+		sources, err := loadSearchSources(database, input.SourceID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "读取书源失败"})
+			return
+		}
+		if len(sources) == 0 {
+			writeJSON(w, http.StatusNotFound, map[string]string{"message": "没有可搜索的书源"})
+			return
+		}
+
+		concurrency, err := database.SearchConcurrency()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "读取设置失败"})
+			return
+		}
+		concurrency = normalizeSearchConcurrency(concurrency, len(sources))
+
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"message": "当前环境不支持流式响应"})
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/x-ndjson; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		w.Header().Set("X-Accel-Buffering", "no")
+		w.WriteHeader(http.StatusOK)
+
+		encoder := json.NewEncoder(w)
+		if err := encoder.Encode(searchStreamEvent{
+			Type:         "start",
+			Keyword:      input.Keyword,
+			Page:         input.Page,
+			TotalSources: len(sources),
+		}); err != nil {
+			return
+		}
+		flusher.Flush()
+
+		streamCtx, cancel := context.WithCancel(r.Context())
+		defer cancel()
+
+		events := make(chan searchStreamEvent)
+		go runSearchStream(streamCtx, sources, input, concurrency, events)
+
+		completedSources := 0
+		totalBooks := 0
+		for event := range events {
+			if event.Type == "source" {
+				completedSources++
+				totalBooks += len(event.Books)
+				event.CompletedSources = completedSources
+				event.TotalSources = len(sources)
+			}
+			if err := encoder.Encode(event); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+
+		_ = encoder.Encode(searchStreamEvent{
+			Type:             "done",
+			Keyword:          input.Keyword,
+			Page:             input.Page,
+			TotalSources:     len(sources),
+			CompletedSources: completedSources,
+			TotalBooks:       totalBooks,
+		})
+		flusher.Flush()
+	}
+}
+
+func runSearchStream(ctx context.Context, sources []legado.Source, input searchRequest, concurrency int, events chan<- searchStreamEvent) {
+	defer close(events)
+
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+scheduleLoop:
+	for _, source := range sources {
+		select {
+		case <-ctx.Done():
+			break scheduleLoop
+		case sem <- struct{}{}:
+		}
+
+		wg.Add(1)
+		go func(source legado.Source) {
+			defer wg.Done()
+			defer func() { <-sem }()
+
+			event := searchOneSource(ctx, source, input)
+			select {
+			case <-ctx.Done():
+			case events <- event:
+			}
+		}(source)
+	}
+	wg.Wait()
+}
+
+func searchOneSource(ctx context.Context, source legado.Source, input searchRequest) searchStreamEvent {
+	searchCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+
+	status := searchStatusFromSource(source)
+	result, err := legado.NewEngine().Search(searchCtx, source, legado.SearchOptions{Keyword: input.Keyword, Page: input.Page})
+	if err != nil {
+		status.Message = err.Error()
+		var verification legado.NeedVerificationError
+		if errors.As(err, &verification) {
+			status.NeedVerification = true
+			status.VerificationURL = verification.URL
+		}
+		return searchStreamEvent{Type: "source", Source: status, Books: []searchBookPayload{}}
+	}
+
+	books := make([]searchBookPayload, 0, len(result.Books))
+	for _, book := range result.Books {
+		books = append(books, searchBookFromLegado(source, book))
+	}
+	status.Success = true
+	status.Count = len(books)
+	return searchStreamEvent{Type: "source", Source: status, Books: books}
+}
+
+func normalizeSearchConcurrency(value int, sourceCount int) int {
+	if value <= 0 {
+		value = db.DefaultSearchConcurrency
+	}
+	if sourceCount > 0 && value > sourceCount {
+		return sourceCount
+	}
+	return value
+}
+
+func loadSearchSources(database *db.DB, sourceID string) ([]legado.Source, error) {
+	rows, err := database.ListEnabledBookSourceDetails()
+	if err != nil {
+		return nil, err
+	}
+	sourceID = strings.TrimSpace(sourceID)
+	sources := make([]legado.Source, 0, len(rows))
+	for _, row := range rows {
+		if sourceID != "" && !sameBookSourceID(sourceID, row.BookSourceURL) {
+			continue
+		}
+		sources = append(sources, legado.SourceFromDB(row))
+	}
+	return sources, nil
 }
 
 func searchHandler(database *db.DB) http.HandlerFunc {
