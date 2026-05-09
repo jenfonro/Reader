@@ -351,7 +351,8 @@ func (d *DB) SaveBookSource(originalURL string, item BookSourceImportItem) (Book
 		}
 		created = affected == 0
 	} else {
-		err := tx.QueryRow(`SELECT book_source_url FROM book_sources WHERE book_source_url=? LIMIT 1`, url).Scan(new(string))
+		var existingURL string
+		err := tx.QueryRow(`SELECT book_source_url FROM book_sources WHERE book_source_url=? LIMIT 1`, url).Scan(&existingURL)
 		switch {
 		case err == nil:
 			created = false
